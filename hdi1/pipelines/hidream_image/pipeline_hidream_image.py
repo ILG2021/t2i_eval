@@ -673,17 +673,16 @@ class HiDreamImagePipeline(DiffusionPipeline, FromSingleFileMixin):
                     out[:, :, 0:pH*pW] = latent_model_input
                     latent_model_input = out
 
-                noise_pred = self.transformer(
-                    hidden_states = latent_model_input,
-                    timesteps = timestep,
-                    encoder_hidden_states = prompt_embeds,
-                    pooled_embeds = pooled_prompt_embeds,
-                    img_sizes = img_sizes,
-                    img_ids = img_ids,
-                    return_dict = False,
-                )[0]
-                if torch.isnan(noise_pred).any():
-                    print(f"[DEBUG] NaN detected in transformer output at step {i}")
+                with torch.autocast("cuda", dtype=torch.bfloat16):
+                    noise_pred = self.transformer(
+                        hidden_states = latent_model_input,
+                        timesteps = timestep,
+                        encoder_hidden_states = prompt_embeds,
+                        pooled_embeds = pooled_prompt_embeds,
+                        img_sizes = img_sizes,
+                        img_ids = img_ids,
+                        return_dict = False,
+                    )[0]
                 noise_pred = -noise_pred
 
                 # perform guidance
@@ -694,8 +693,6 @@ class HiDreamImagePipeline(DiffusionPipeline, FromSingleFileMixin):
                 # compute the previous noisy sample x_t -> x_t-1
                 latents_dtype = latents.dtype
                 latents = self.scheduler.step(noise_pred, t, latents, return_dict=False)[0]
-                if i == 0 and torch.isnan(latents).any():
-                    print(f"[DEBUG] NaN in latents after step {i} (scheduler step issue)")
 
                 if latents.dtype != latents_dtype:
                     if torch.backends.mps.is_available():
@@ -723,13 +720,9 @@ class HiDreamImagePipeline(DiffusionPipeline, FromSingleFileMixin):
             image = latents
 
         else:
-            print(f"[DEBUG] latents stats before VAE decode: min={latents.min().item():.4f}, max={latents.max().item():.4f}, mean={latents.mean().item():.4f}, dtype={latents.dtype}")
-            print(f"[DEBUG] VAE scaling_factor={self.vae.config.scaling_factor}, shift_factor={getattr(self.vae.config, 'shift_factor', 'N/A')}")
             latents = (latents / self.vae.config.scaling_factor) + self.vae.config.shift_factor
-            print(f"[DEBUG] latents stats after rescale: min={latents.min().item():.4f}, max={latents.max().item():.4f}")
 
             image = self.vae.decode(latents, return_dict=False)[0]
-            print(f"[DEBUG] VAE output stats: min={image.min().item():.4f}, max={image.max().item():.4f}")
             image = self.image_processor.postprocess(image, output_type=output_type)
 
         # Offload all models
