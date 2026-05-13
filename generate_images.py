@@ -148,9 +148,6 @@ def main():
                 )
 
             elif "HiDream-I1-Fast" == folder_name:
-                _hdi1_path = os.path.join(os.path.dirname(__file__), "HiDream-I1-nf4")
-                if _hdi1_path not in sys.path:
-                    sys.path.insert(0, _hdi1_path)
                 from hdi1.nf4 import load_models, generate_image
                 pipeline, _ = load_models("fast")
             else:
@@ -172,11 +169,12 @@ def main():
             else:
                 pipeline.enable_model_cpu_offload()
 
-            # 针对 VAE 开启进一步显存优化
-            if hasattr(pipeline, "enable_vae_slicing"):
-                pipeline.enable_vae_slicing()
-            if hasattr(pipeline, "enable_vae_tiling"):
-                pipeline.enable_vae_tiling()
+            if folder_name != "HiDream-I1-Fast":
+                # 针对 VAE 开启进一步显存优化
+                if hasattr(pipeline, "enable_vae_slicing"):
+                    pipeline.enable_vae_slicing()
+                if hasattr(pipeline, "enable_vae_tiling"):
+                    pipeline.enable_vae_tiling()
 
             # 3. 遍历 Excel 里的每一行数据
             for index, row in tqdm(df.iterrows(), total=len(df), desc=f"生成中 ({folder_name})"):
@@ -226,7 +224,7 @@ def main():
                 elif "lightning" in folder_name.lower() or "turbo" in folder_name.lower() or "fast" in folder_name.lower():
                     kwargs["num_inference_steps"] = 8
 
-                if folder_name == "Hidream-I1-Fast":
+                if folder_name == "HiDream-I1-Fast":
                     resolution = (kwargs["width"], kwargs["height"])
                     image, seed = generate_image(pipeline, "fast", kwargs["prompt"], resolution, -1)
                 else:

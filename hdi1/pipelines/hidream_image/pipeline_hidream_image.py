@@ -719,9 +719,13 @@ class HiDreamImagePipeline(DiffusionPipeline, FromSingleFileMixin):
             image = latents
 
         else:
+            print(f"[DEBUG] latents stats before VAE decode: min={latents.min().item():.4f}, max={latents.max().item():.4f}, mean={latents.mean().item():.4f}, dtype={latents.dtype}")
+            print(f"[DEBUG] VAE scaling_factor={self.vae.config.scaling_factor}, shift_factor={getattr(self.vae.config, 'shift_factor', 'N/A')}")
             latents = (latents / self.vae.config.scaling_factor) + self.vae.config.shift_factor
+            print(f"[DEBUG] latents stats after rescale: min={latents.min().item():.4f}, max={latents.max().item():.4f}")
 
             image = self.vae.decode(latents, return_dict=False)[0]
+            print(f"[DEBUG] VAE output stats: min={image.min().item():.4f}, max={image.max().item():.4f}")
             image = self.image_processor.postprocess(image, output_type=output_type)
 
         # Offload all models
