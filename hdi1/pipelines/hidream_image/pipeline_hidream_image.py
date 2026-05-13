@@ -611,9 +611,6 @@ class HiDreamImagePipeline(DiffusionPipeline, FromSingleFileMixin):
             generator,
             latents,
         )
-        # Keep latents in float32 throughout denoising to prevent bfloat16
-        # overflow/NaN accumulation over multiple steps (NF4 + bf16 instability)
-        latents = latents.float()
 
         if latents.shape[-2] != latents.shape[-1]:
             B, C, H, W = latents.shape
@@ -677,7 +674,7 @@ class HiDreamImagePipeline(DiffusionPipeline, FromSingleFileMixin):
                     latent_model_input = out
 
                 noise_pred = self.transformer(
-                    hidden_states = latent_model_input.to(torch.bfloat16),
+                    hidden_states = latent_model_input,
                     timesteps = timestep,
                     encoder_hidden_states = prompt_embeds,
                     pooled_embeds = pooled_prompt_embeds,
@@ -695,8 +692,6 @@ class HiDreamImagePipeline(DiffusionPipeline, FromSingleFileMixin):
                 # compute the previous noisy sample x_t -> x_t-1
                 latents_dtype = latents.dtype
                 latents = self.scheduler.step(noise_pred, t, latents, return_dict=False)[0]
-                # Cast back to float32 after each step to prevent bf16 error accumulation
-                latents = latents.float()
 
                 if latents.dtype != latents_dtype:
                     if torch.backends.mps.is_available():
@@ -724,8 +719,6 @@ class HiDreamImagePipeline(DiffusionPipeline, FromSingleFileMixin):
             image = latents
 
         else:
-            # Cast latents back to bfloat16 for VAE decode (VAE weights are bf16)
-            latents = latents.to(torch.bfloat16)
             latents = (latents / self.vae.config.scaling_factor) + self.vae.config.shift_factor
 
             image = self.vae.decode(latents, return_dict=False)[0]

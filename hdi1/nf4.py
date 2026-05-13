@@ -51,12 +51,10 @@ def load_models(model_type: str):
         LLAMA_MODEL_NAME,
         output_hidden_states=True,
         output_attentions=True,
+        return_dict_in_generate=True,
         torch_dtype=torch.bfloat16,
         device_map="auto",
     )
-    # return_dict_in_generate was removed from __init__ in newer transformers;
-    # set it on generation_config instead.
-    text_encoder_4.generation_config.return_dict_in_generate = True
     log_vram("✅ Text encoder loaded!")
 
     transformer = HiDreamImageTransformer2DModel.from_pretrained(
