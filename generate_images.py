@@ -1,6 +1,5 @@
 import os
-
-from hdi1.nf4 import load_models, generate_image
+import sys
 
 # 将 HuggingFace 权重缓存路径设置为当前目录下的 hf_cache 文件夹
 # 必须在导入 torch 和 diffusers 之前设置
@@ -149,6 +148,10 @@ def main():
                 )
 
             elif "HiDream-I1-Fast" == folder_name:
+                _hdi1_path = os.path.join(os.path.dirname(__file__), "HiDream-I1-nf4")
+                if _hdi1_path not in sys.path:
+                    sys.path.insert(0, _hdi1_path)
+                from hdi1.nf4 import load_models, generate_image
                 pipeline, _ = load_models("fast")
             else:
                 pipeline = AutoPipelineForText2Image.from_pretrained(
