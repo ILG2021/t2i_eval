@@ -35,7 +35,7 @@ MODELS = {
     # "z_image_turbo": "Tongyi-MAI/Z-Image-Turbo",
     # "OpenKolors_v2_1": "lrzjason/OpenKolors_v2_1"
     # ing
-    "HiDream-O1-Image": "HiDream-ai/HiDream-O1-Image",
+    "HiDream-O1-Image": "drbaph/HiDream-O1-Image-Dev-FP8",
     # "ERNIE-Image-turbo": "baidu/ERNIE-Image-turbo",
     # "Juggernaut_Z": "RunDiffusion/Juggernaut-Z-Image",
     # "Juggernaut-XI-v11": "RunDiffusion/Juggernaut-XI-v11",
@@ -149,6 +149,18 @@ def main():
             elif "HiDream-I1-Fast" == folder_name:
                 from hdi1.nf4 import load_models, generate_image
                 pipeline, _ = load_models("fast")
+            elif folder_name == "HiDream-O1-Image":
+                from huggingface_hub import snapshot_download
+                import sys
+                hdo1_path = os.path.join(os.getcwd(), "hdo1")
+                if hdo1_path not in sys.path:
+                    sys.path.append(hdo1_path)
+                from fp8_loader import load_image_model
+                
+                print(f"[{folder_name}] Downloading/Locating model {model_id}...")
+                model_dir = snapshot_download(model_id, cache_dir="./hf_cache")
+                processor, model = load_image_model(model_dir)
+                pipeline = (processor, model)
             else:
                 pipeline = AutoPipelineForText2Image.from_pretrained(
                     model_id,
@@ -163,12 +175,12 @@ def main():
             # 每次只将当前计算层移到 GPU，峰值显存最低，适合超出 VRAM 的大模型
             if folder_name in ("ERNIE-Image-turbo","FLUX.2_klein_9B"):
                 pipeline.enable_sequential_cpu_offload()
-            elif folder_name == 'HiDream-I1-Fast':
+            elif folder_name in ('HiDream-I1-Fast', 'HiDream-O1-Image'):
                 pass
             else:
                 pipeline.enable_model_cpu_offload()
 
-            if folder_name != "HiDream-I1-Fast":
+            if folder_name not in ("HiDream-I1-Fast", "HiDream-O1-Image"):
                 # 针对 VAE 开启进一步显存优化
                 if hasattr(pipeline, "enable_vae_slicing"):
                     pipeline.enable_vae_slicing()
@@ -212,13 +224,21 @@ def main():
                     kwargs["guidance_scale"] = 5.0
                     kwargs["num_inference_steps"] = 50
                     kwargs["negative_prompt"] = ""
-                elif "hidream" in folder_name.lower():
-                    # Fast/Dev 变体均使用 guidance_scale=0.0
-                    # Fast: 16 步，Dev: 28 步；固定分辨率 1024x1024
+                elif "hidream-i1" in folder_name.lower():
+                    # Fast 变体均使用 guidance_scale=0.0
+                    # Fast: 16 步；固定分辨率 1024x1024
                     kwargs["guidance_scale"] = 0.0
-                    kwargs["num_inference_steps"] = 16 if "fast" in folder_name.lower() else 28
+                    kwargs["num_inference_steps"] = 16
                     kwargs["height"] = 1024
                     kwargs["width"] = 1024
+                elif "hidream-o1" in folder_name.lower():
+                    # Dev 变体推理参数
+                    kwargs["guidance_scale"] = 0.0
+                    kwargs["num_inference_steps"] = 28
+                    kwargs["height"] = 1024
+                    kwargs["width"] = 1024
+                    kwargs["shift"] = 1.0
+                    kwargs["scheduler_name"] = "flash"
                 # 针对其他 Turbo / Lightning / Fast 模型，适当降低默认步数提高速度
                 elif "lightning" in folder_name.lower() or "turbo" in folder_name.lower() or "fast" in folder_name.lower():
                     kwargs["num_inference_steps"] = 8
@@ -226,6 +246,21 @@ def main():
                 if folder_name == "HiDream-I1-Fast":
                     resolution = (kwargs["width"], kwargs["height"])
                     image, seed = generate_image(pipeline, "fast", kwargs["prompt"], resolution, -1)
+                elif folder_name == "HiDream-O1-Image":
+                    processor, model = pipeline
+                    from models.pipeline import generate_image as hdo1_generate_image
+                    image = hdo1_generate_image(
+                        model=model,
+                        processor=processor,
+                        prompt=kwargs["prompt"],
+                        height=kwargs["height"],
+                        width=kwargs["width"],
+                        num_inference_steps=kwargs["num_inference_steps"],
+                        guidance_scale=kwargs["guidance_scale"],
+                        shift=kwargs.get("shift", 1.0),
+                        scheduler_name=kwargs.get("scheduler_name", "flash"),
+                        seed=42
+                    )
                 else:
                     image = pipeline(**kwargs).images[0]
 
@@ -255,6 +290,10 @@ def main():
             # 必须在这里卸载模型并清空显存，否则 OOM 报错后显存依然被占满，后续模型全都会直接 OOM 闪退！
             if 'pipeline' in locals():
                 del pipeline
+            if 'model' in locals():
+                del model
+            if 'processor' in locals():
+                del processor
             gc.collect()
             torch.cuda.empty_cache()
 
