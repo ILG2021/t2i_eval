@@ -11,7 +11,6 @@ Key insight: Abiray/ERNIE-Image-Turbo-FP8-NVFP4 uses ComfyUI's "scaled_fp8" form
   - We dequantize FP8 * scale_weight → bfloat16 for diffusers compatibility
 """
 
-import safetensors
 import torch
 
 from .model import ErnieImageModel
@@ -31,15 +30,73 @@ ERNIE_CONFIG = {
 
 
 def _load_safetensors(ckpt_path: str) -> tuple[dict, dict]:
-    """Load safetensors using safe_open (same as Forge's load_torch_file)."""
+    """
+    Manual safetensors reader that bypasses the strict 'file not fully covered'
+    validation added in safetensors >= 0.4.0.
+
+    ComfyUI's scaled_fp8 format files often have extra bytes at the end that
+    aren't declared in the header (padding/alignment), which causes the standard
+    safe_open to raise: "incomplete metadata, file not fully covered".
+
+    safetensors binary layout:
+      [8 bytes: header_size (uint64 LE)]
+      [header_size bytes: JSON header]
+      [remaining bytes: raw tensor data]
+
+    Each tensor entry in the JSON has:
+      {"dtype": ..., "shape": [...], "data_offsets": [start, end]}
+    where offsets are relative to the start of the data section.
+    """
+    import json
+    import struct
+
+    DTYPE_MAP = {
+        "F64":  torch.float64,
+        "F32":  torch.float32,
+        "BF16": torch.bfloat16,
+        "F16":  torch.float16,
+        "F8_E4M3": getattr(torch, "float8_e4m3fn",  torch.float32),
+        "F8_E5M2": getattr(torch, "float8_e5m2",    torch.float32),
+        "I64":  torch.int64,
+        "I32":  torch.int32,
+        "I16":  torch.int16,
+        "I8":   torch.int8,
+        "U8":   torch.uint8,
+        "BOOL": torch.bool,
+    }
+
+    with open(ckpt_path, "rb") as f:
+        # 1. Read 8-byte header size
+        header_size = struct.unpack("<Q", f.read(8))[0]
+        # 2. Read JSON header
+        header_bytes = f.read(header_size)
+        header = json.loads(header_bytes.decode("utf-8"))
+        # 3. Data section starts here
+        data_start = 8 + header_size
+        # 4. Read full data section into a buffer (bypass coverage check)
+        data = f.read()  # reads everything remaining
+
+    metadata = header.pop("__metadata__", {}) or {}
+
     sd = {}
-    metadata = {}
-    with safetensors.safe_open(ckpt_path, framework="pt", device="cpu") as f:
-        for k in f.keys():
-            sd[k] = f.get_tensor(k)
-        meta = f.metadata()
-        if meta:
-            metadata = meta
+    for name, info in header.items():
+        dtype_str = info["dtype"]
+        shape     = info["shape"]
+        start, end = info["data_offsets"]
+
+        dtype = DTYPE_MAP.get(dtype_str)
+        if dtype is None:
+            print(f"[ERNIE Loader] Unknown dtype '{dtype_str}' for {name}, skipping")
+            continue
+
+        raw = data[start:end]
+        tensor = torch.frombuffer(bytearray(raw), dtype=dtype)
+        if shape:
+            tensor = tensor.reshape(shape)
+        else:
+            tensor = tensor.squeeze()
+        sd[name] = tensor.clone()  # clone to detach from buffer
+
     return sd, metadata
 
 

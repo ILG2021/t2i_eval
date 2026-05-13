@@ -1,6 +1,8 @@
 import os
 import sys
 
+import huggingface_hub
+
 # 将 HuggingFace 权重缓存路径设置为当前目录下的 hf_cache 文件夹
 # 必须在导入 torch 和 diffusers 之前设置
 os.environ["HF_HOME"] = os.path.join(os.getcwd(), "hf_cache")
@@ -122,9 +124,10 @@ def main():
                 local_dir = os.path.join( "checkpoints", "ERNIE-Image-Turbo-FP8-NVFP4")
                 ckpt_path = os.path.join(local_dir, "ernie-image-turbo-fp8.safetensors")
                 if not os.path.exists(ckpt_path):
-                    snapshot_download(
+                    huggingface_hub.snapshot_download(
                         repo_id="Abiray/ERNIE-Image-Turbo-FP8-NVFP4",
-                        local_dir="checkpoints"
+                        local_dir="checkpoints/ERNIE-Image-Turbo-FP8-NVFP4",
+                        ignore_patterns=["*nvfp4*"]
                     )
 
                 if os.path.exists(ckpt_path):
