@@ -117,30 +117,34 @@ def main():
             elif "ernie" in folder_name.lower():
                 from diffusers import ErnieImagePipeline
                 from ernie.loader import load_ernie_fp8
-                from huggingface_hub import hf_hub_download
 
-                if "fp8" in model_id.lower() or "nvfp4" in model_id.lower():
-                    print(f"[{folder_name}] 正在加载独立版 ERNIE FP8 权重...")
-                    ckpt_path = hf_hub_download(
-                        repo_id=model_id, 
-                        filename="ernie-image-turbo-fp8.safetensors",
-                        cache_dir="./hf_cache"
+                # 使用 hf download --local-dir=checkpoints 下载的本地目录
+                local_dir = os.path.join( "checkpoints", "ERNIE-Image-Turbo-FP8-NVFP4")
+                ckpt_path = os.path.join(local_dir, "ernie-image-turbo-fp8.safetensors")
+                if not os.path.exists(ckpt_path):
+                    snapshot_download(
+                        repo_id="Abiray/ERNIE-Image-Turbo-FP8-NVFP4",
+                        local_dir="checkpoints"
                     )
-                    
+
+                if os.path.exists(ckpt_path):
+                    print(f"[{folder_name}] 从本地加载 ERNIE FP8: {ckpt_path}")
+                    # 使用 safe_open + 正确处理 scaled_fp8 格式 + 反量化到 bfloat16
                     transformer = load_ernie_fp8(ckpt_path)
-                    transformer.to(torch.bfloat16)
-                    
+                    transformer = transformer.to(torch.bfloat16)
+
+                    # 从同一本地目录加载 tokenizer/vae/scheduler 等其他组件
                     pipeline = ErnieImagePipeline.from_pretrained(
-                        "Baidu/ERNIE-Image-Turbo",
+                        local_dir,
                         transformer=transformer,
                         torch_dtype=torch.bfloat16,
-                        cache_dir="./hf_cache"
+                        local_files_only=True,
                     )
                 else:
-                    pipeline = ErnieImagePipeline.from_pretrained(
-                        model_id,
-                        torch_dtype=torch.bfloat16,
-                        cache_dir="./hf_cache"
+                    raise FileNotFoundError(
+                        f"未找到 ERNIE FP8 权重: {ckpt_path}\n"
+                        f"请先运行: hf download {model_id} "
+                        f"--local-dir=checkpoints --exclude='*nvfp4*'"
                     )
             elif "Juggernaut-XI-v11" == folder_name or "Juggernaut-XI-Lightning" == folder_name:
                 from diffusers import DiffusionPipeline
