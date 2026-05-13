@@ -2,7 +2,7 @@ pandas
 openpyxl
 pillow
 diffusers
-transformers
+transformers==4.57.1
 accelerate
 safetensors
 sentencepiece

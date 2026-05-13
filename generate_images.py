@@ -34,9 +34,10 @@ MODELS = {
     # "FLUX.2_klein_9B": "black-forest-labs/FLUX.2-klein-9B",  # BF16，用 sequential CPU offload 控制显存
     # "z_image_turbo": "Tongyi-MAI/Z-Image-Turbo",
     # "OpenKolors_v2_1": "lrzjason/OpenKolors_v2_1"
+    # "HiDream-O1-Image": "drbaph/HiDream-O1-Image-Dev-FP8",
+
     # ing
-    "HiDream-O1-Image": "drbaph/HiDream-O1-Image-Dev-FP8",
-    # "ERNIE-Image-turbo": "baidu/ERNIE-Image-turbo",
+    "ERNIE-Image-turbo": "Abiray/ERNIE-Image-Turbo-FP8-NVFP4",
     # "Juggernaut_Z": "RunDiffusion/Juggernaut-Z-Image",
     # "Juggernaut-XI-v11": "RunDiffusion/Juggernaut-XI-v11",
     # "Juggernaut-XI-Lightning": "RunDiffusion/Juggernaut-XI-Lightning",
@@ -114,12 +115,37 @@ def main():
                     cache_dir="./hf_cache"
                 )
             elif "ernie" in folder_name.lower():
-                from diffusers import ErnieImagePipeline
-                pipeline = ErnieImagePipeline.from_pretrained(
-                    model_id,
-                    torch_dtype=torch.bfloat16,
-                    cache_dir="./hf_cache"
-                )
+                from diffusers import ErnieImagePipeline, ErnieImageTransformer2DModel
+                from huggingface_hub import hf_hub_download
+                from safetensors.torch import load_file
+                
+                if "fp8" in model_id.lower() or "nvfp4" in model_id.lower():
+                    print(f"[{folder_name}] 正在下载并加载 ERNIE FP8 单文件权重...")
+                    ckpt_path = hf_hub_download(
+                        repo_id=model_id, 
+                        filename="ernie-image-turbo-fp8.safetensors",
+                        cache_dir="./hf_cache"
+                    )
+                    
+                    config = ErnieImageTransformer2DModel.load_config("Baidu/ERNIE-Image-Turbo", subfolder="transformer")
+                    with torch.device("meta"):
+                        transformer = ErnieImageTransformer2DModel.from_config(config)
+                    
+                    state_dict = load_file(ckpt_path)
+                    transformer.load_state_dict(state_dict, assign=True)
+                    
+                    pipeline = ErnieImagePipeline.from_pretrained(
+                        "Baidu/ERNIE-Image-Turbo",
+                        transformer=transformer,
+                        torch_dtype=torch.bfloat16,
+                        cache_dir="./hf_cache"
+                    )
+                else:
+                    pipeline = ErnieImagePipeline.from_pretrained(
+                        model_id,
+                        torch_dtype=torch.bfloat16,
+                        cache_dir="./hf_cache"
+                    )
             elif "Juggernaut-XI-v11" == folder_name or "Juggernaut-XI-Lightning" == folder_name:
                 from diffusers import DiffusionPipeline
                 print("model", model_id)
