@@ -1,0 +1,11 @@
+pandas
+openpyxl
+pillow
+diffusers
+transformers
+accelerate
+safetensors
+sentencepiece
+huggingface_hub
+peft
+tqdm
