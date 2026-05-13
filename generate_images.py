@@ -115,24 +115,20 @@ def main():
                     cache_dir="./hf_cache"
                 )
             elif "ernie" in folder_name.lower():
-                from diffusers import ErnieImagePipeline, ErnieImageTransformer2DModel
+                from diffusers import ErnieImagePipeline
+                from ernie.loader import load_ernie_fp8
                 from huggingface_hub import hf_hub_download
-                from safetensors.torch import load_file
-                
+
                 if "fp8" in model_id.lower() or "nvfp4" in model_id.lower():
-                    print(f"[{folder_name}] 正在下载并加载 ERNIE FP8 单文件权重...")
+                    print(f"[{folder_name}] 正在加载独立版 ERNIE FP8 权重...")
                     ckpt_path = hf_hub_download(
                         repo_id=model_id, 
                         filename="ernie-image-turbo-fp8.safetensors",
                         cache_dir="./hf_cache"
                     )
                     
-                    config = ErnieImageTransformer2DModel.load_config("Baidu/ERNIE-Image-Turbo", subfolder="transformer")
-                    with torch.device("meta"):
-                        transformer = ErnieImageTransformer2DModel.from_config(config)
-                    
-                    state_dict = load_file(ckpt_path)
-                    transformer.load_state_dict(state_dict, assign=True)
+                    transformer = load_ernie_fp8(ckpt_path)
+                    transformer.to(torch.bfloat16)
                     
                     pipeline = ErnieImagePipeline.from_pretrained(
                         "Baidu/ERNIE-Image-Turbo",
@@ -197,12 +193,10 @@ def main():
 
             # 开启模型 CPU 卸载以节省显存，取代 pipeline.to("cuda")
             # 现在 ERNIE 已经换用 FP8 模型，显存占用大幅下降，可以直接使用常规 offload 提升生图速度
-            # FLUX.2_klein_9B（BF16 ~18GB）和 ERNIE 使用逐层 sequential offload，
+            # FLUX.2_klein_9B（BF16 ~18GB）使用逐层 sequential offload，
             # 每次只将当前计算层移到 GPU，峰值显存最低，适合超出 VRAM 的大模型
-            if folder_name in ("ERNIE-Image-turbo","FLUX.2_klein_9B"):
+            if folder_name in ("FLUX.2_klein_9B"):
                 pipeline.enable_sequential_cpu_offload()
-            elif folder_name in ('HiDream-I1-Fast', 'HiDream-O1-Image'):
-                pass
             else:
                 pipeline.enable_model_cpu_offload()
 
@@ -244,8 +238,9 @@ def main():
                     kwargs["guidance_scale"] = 1.5
                     kwargs["num_inference_steps"] = 5
                 elif "ernie" in folder_name.lower():
-                    kwargs["guidance_scale"] = 4.0
-                    kwargs["num_inference_steps"] = 50
+                    kwargs["guidance_scale"] = 1.0
+                    kwargs["num_inference_steps"] = 8
+                    kwargs["use_pe"] = True
                 elif "openkolors" in folder_name.lower():
                     kwargs["guidance_scale"] = 5.0
                     kwargs["num_inference_steps"] = 50
