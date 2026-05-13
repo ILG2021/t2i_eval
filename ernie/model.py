@@ -2,6 +2,8 @@ import math
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from diffusers.configuration_utils import ConfigMixin, register_to_config
+from diffusers.models.modeling_utils import ModelMixin
 
 def attention_function(q, k, v, heads, mask=None):
     b, s, dim = q.shape
@@ -159,7 +161,8 @@ class ErnieImageAdaLNContinuous(nn.Module):
         x = x * (1 + scale.unsqueeze(1)) + shift.unsqueeze(1)
         return x
 
-class ErnieImageModel(nn.Module):
+class ErnieImageModel(ModelMixin, ConfigMixin):
+    @register_to_config
     def __init__(
         self,
         hidden_size: int = 4096,
