@@ -682,6 +682,8 @@ class HiDreamImagePipeline(DiffusionPipeline, FromSingleFileMixin):
                     img_ids = img_ids,
                     return_dict = False,
                 )[0]
+                if torch.isnan(noise_pred).any():
+                    print(f"[DEBUG] NaN detected in transformer output at step {i}")
                 noise_pred = -noise_pred
 
                 # perform guidance
@@ -692,6 +694,8 @@ class HiDreamImagePipeline(DiffusionPipeline, FromSingleFileMixin):
                 # compute the previous noisy sample x_t -> x_t-1
                 latents_dtype = latents.dtype
                 latents = self.scheduler.step(noise_pred, t, latents, return_dict=False)[0]
+                if i == 0 and torch.isnan(latents).any():
+                    print(f"[DEBUG] NaN in latents after step {i} (scheduler step issue)")
 
                 if latents.dtype != latents_dtype:
                     if torch.backends.mps.is_available():
