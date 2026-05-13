@@ -3,6 +3,8 @@ import sys
 
 import huggingface_hub
 
+from sd_forge_neo_api import call_ernie_turbo, call_ernie_image
+
 # 将 HuggingFace 权重缓存路径设置为当前目录下的 hf_cache 文件夹
 # 必须在导入 torch 和 diffusers 之前设置
 os.environ["HF_HOME"] = os.path.join(os.getcwd(), "hf_cache")
@@ -37,13 +39,12 @@ MODELS = {
     # "z_image_turbo": "Tongyi-MAI/Z-Image-Turbo",
     # "OpenKolors_v2_1": "lrzjason/OpenKolors_v2_1"
     # "HiDream-O1-Image": "drbaph/HiDream-O1-Image-Dev-FP8",
-
-    # ing
-    "ERNIE-Image-turbo": "Abiray/ERNIE-Image-Turbo-FP8-NVFP4",
+    # "ERNIE-Image-turbo": "Abiray/ERNIE-Image-Turbo-FP8-NVFP4",
     # "Juggernaut_Z": "RunDiffusion/Juggernaut-Z-Image",
     # "Juggernaut-XI-v11": "RunDiffusion/Juggernaut-XI-v11",
     # "Juggernaut-XI-Lightning": "RunDiffusion/Juggernaut-XI-Lightning",
     # "Realistic_Vision_V6.0_B1_noVAE": "SG161222/Realistic_Vision_V6.0_B1_noVAE",
+    "ERNIE-Image": "baidu/ERNIE-Image",
 }
 
 
@@ -114,48 +115,17 @@ def main():
                     model_id,
                     torch_dtype=torch.bfloat16,
                     use_safetensors=True,
-                    cache_dir="./hf_cache"
+                    cache_dir="./hf_cache",
+                    ignore_patterns=["*.gguf", "*fp16*", "*FP8*"]
                 )
             elif "ernie" in folder_name.lower():
-                from diffusers import ErnieImagePipeline
-                from ernie.loader import load_ernie_fp8
-
-                # 使用 hf download --local-dir=checkpoints 下载的本地目录
-                local_dir = os.path.join( "checkpoints", "ERNIE-Image-Turbo-FP8-NVFP4")
-                ckpt_path = os.path.join(local_dir, "ernie-image-turbo-fp8.safetensors")
-                if not os.path.exists(ckpt_path):
-                    huggingface_hub.snapshot_download(
-                        repo_id="Abiray/ERNIE-Image-Turbo-FP8-NVFP4",
-                        local_dir="checkpoints/ERNIE-Image-Turbo-FP8-NVFP4",
-                        ignore_patterns=["*nvfp4*"]
-                    )
-
-                if os.path.exists(ckpt_path):
-                    print(f"[{folder_name}] 从本地加载 ERNIE FP8: {ckpt_path}")
-                    # 使用 safe_open + 正确处理 scaled_fp8 格式 + 反量化到 bfloat16
-                    transformer = load_ernie_fp8(ckpt_path)
-                    transformer = transformer.to(torch.bfloat16)
-
-                    # 从同一本地目录加载 tokenizer/vae/scheduler 等其他组件
-                    pipeline = ErnieImagePipeline.from_pretrained(
-                        local_dir,
-                        transformer=transformer,
-                        torch_dtype=torch.bfloat16,
-                        local_files_only=True,
-                    )
-                else:
-                    raise FileNotFoundError(
-                        f"未找到 ERNIE FP8 权重: {ckpt_path}\n"
-                        f"请先运行: hf download {model_id} "
-                        f"--local-dir=checkpoints --exclude='*nvfp4*'"
-                    )
+                pipeline = None
             elif "Juggernaut-XI-v11" == folder_name or "Juggernaut-XI-Lightning" == folder_name:
                 from diffusers import DiffusionPipeline
-                print("model", model_id)
                 pipeline = DiffusionPipeline.from_pretrained(
                     model_id,
                     torch_dtype=torch.float16,
-                    use_safetensors=True,
+                    use_safetensors=False,
                     cache_dir="./hf_cache"
                 )
             elif "openkolors" in folder_name.lower():
@@ -174,10 +144,6 @@ def main():
                     variant="fp16",
                     cache_dir="./hf_cache"
                 )
-
-            elif "HiDream-I1-Fast" == folder_name:
-                from hdi1.nf4 import load_models, generate_image
-                pipeline, _ = load_models("fast")
             elif folder_name == "HiDream-O1-Image":
                 from huggingface_hub import snapshot_download
                 import sys
@@ -185,7 +151,7 @@ def main():
                 if hdo1_path not in sys.path:
                     sys.path.append(hdo1_path)
                 from fp8_loader import load_image_model
-                
+
                 print(f"[{folder_name}] Downloading/Locating model {model_id}...")
                 model_dir = snapshot_download(model_id, cache_dir="./hf_cache")
                 processor, model = load_image_model(model_dir)
@@ -194,7 +160,7 @@ def main():
                 pipeline = AutoPipelineForText2Image.from_pretrained(
                     model_id,
                     torch_dtype=torch.bfloat16,
-                    use_safetensors=True,
+                    use_safetensors=False,
                     cache_dir="./hf_cache"
                 )
 
@@ -202,17 +168,18 @@ def main():
             # 现在 ERNIE 已经换用 FP8 模型，显存占用大幅下降，可以直接使用常规 offload 提升生图速度
             # FLUX.2_klein_9B（BF16 ~18GB）使用逐层 sequential offload，
             # 每次只将当前计算层移到 GPU，峰值显存最低，适合超出 VRAM 的大模型
-            if folder_name in ("FLUX.2_klein_9B"):
-                pipeline.enable_sequential_cpu_offload()
-            else:
-                pipeline.enable_model_cpu_offload()
+            if pipeline:
+                if folder_name in ("FLUX.2_klein_9B"):
+                    pipeline.enable_sequential_cpu_offload()
+                else:
+                    pipeline.enable_model_cpu_offload()
 
-            if folder_name not in ("HiDream-I1-Fast", "HiDream-O1-Image"):
-                # 针对 VAE 开启进一步显存优化
-                if hasattr(pipeline, "enable_vae_slicing"):
-                    pipeline.enable_vae_slicing()
-                if hasattr(pipeline, "enable_vae_tiling"):
-                    pipeline.enable_vae_tiling()
+                if folder_name not in ("HiDream-O1-Image"):
+                    # 针对 VAE 开启进一步显存优化
+                    if hasattr(pipeline, "enable_vae_slicing"):
+                        pipeline.enable_vae_slicing()
+                    if hasattr(pipeline, "enable_vae_tiling"):
+                        pipeline.enable_vae_tiling()
 
             # 3. 遍历 Excel 里的每一行数据
             for index, row in tqdm(df.iterrows(), total=len(df), desc=f"生成中 ({folder_name})"):
@@ -271,10 +238,7 @@ def main():
                 elif "lightning" in folder_name.lower() or "turbo" in folder_name.lower() or "fast" in folder_name.lower():
                     kwargs["num_inference_steps"] = 8
 
-                if folder_name == "HiDream-I1-Fast":
-                    resolution = (kwargs["width"], kwargs["height"])
-                    image, seed = generate_image(pipeline, "fast", kwargs["prompt"], resolution, -1)
-                elif folder_name == "HiDream-O1-Image":
+                if folder_name == "HiDream-O1-Image":
                     processor, model = pipeline
                     from models.pipeline import generate_image as hdo1_generate_image
                     image = hdo1_generate_image(
@@ -289,6 +253,10 @@ def main():
                         scheduler_name=kwargs.get("scheduler_name", "flash"),
                         seed=42
                     )
+                elif folder_name == "ERNIE-Image-turbo":  # sd webui forge neo api
+                    image = call_ernie_turbo(kwargs["prompt"])
+                elif folder_name == "ERNIE-Image":
+                    image = call_ernie_image(kwargs["prompt"])
                 else:
                     image = pipeline(**kwargs).images[0]
 
