@@ -29,14 +29,13 @@ IMAGE_NAME_COLUMN = "图片名"  # 换成你实际的列名
 # 字典的键将作为最终生成的“文件夹名称”
 # 字典的值为对应模型在 HuggingFace 上的库ID，或者是你本地的模型文件夹路径。
 MODELS = {
-    # 提示：FLUX.2 / z image turbo / ERNIE 目前在 HF 的具体路径可能需要您按实际获取到的本地路径或HF ID修改
+    # 测试ok的
     # "FLUX.2_klein_4B": "black-forest-labs/FLUX.2-klein-4B",
     # "FLUX.2_klein_9B": "black-forest-labs/FLUX.2-klein-9B",  # BF16，用 sequential CPU offload 控制显存
     # "z_image_turbo": "Tongyi-MAI/Z-Image-Turbo",
     # "OpenKolors_v2_1": "lrzjason/OpenKolors_v2_1"
-
-    "HiDream-I1-Fast": "HiDream-ai/HiDream-I1-Fast",
-    # "HiDream-O1-Image": "HiDream-ai/HiDream-O1-Image",
+    # ing
+    "HiDream-O1-Image": "HiDream-ai/HiDream-O1-Image",
     # "ERNIE-Image-turbo": "baidu/ERNIE-Image-turbo",
     # "Juggernaut_Z": "RunDiffusion/Juggernaut-Z-Image",
     # "Juggernaut-XI-v11": "RunDiffusion/Juggernaut-XI-v11",
