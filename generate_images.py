@@ -1,9 +1,10 @@
+from sd_forge_neo_api import call_zit_turbo
 import os
 import sys
 
 import huggingface_hub
 
-from sd_forge_neo_api import call_ernie_turbo, call_ernie_image
+from sd_forge_neo_api import call_ernie_turbo
 
 # 将 HuggingFace 权重缓存路径设置为当前目录下的 hf_cache 文件夹
 # 必须在导入 torch 和 diffusers 之前设置
@@ -44,11 +45,9 @@ MODELS = {
     # "Juggernaut_Z": "RunDiffusion/Juggernaut-Z-Image",
     # "Juggernaut-XI-v11": "RunDiffusion/Juggernaut-XI-v11",
     # "Juggernaut-XI-Lightning": "RunDiffusion/Juggernaut-XI-Lightning",
-    # "Realistic_Vision_V6.0_B1_noVAE": "SG161222/Realistic_Vision_V6.0_B1_noVAE",
     # "ERNIE-Image-api": "baidu/ERNIE-Image",
-    "SD3.5_Medium": "stabilityai/stable-diffusion-3.5-medium",
-    "FIBO": "briaai/FIBO",
-    "GLM-Image": "zai-org/GLM-Image",
+    "z-image-turbo-api": "Tongyi-MAI/Z-Image-Turbo",
+    # "SD3.5_Medium": "stabilityai/stable-diffusion-3.5-medium",
 }
 
 
@@ -167,64 +166,6 @@ def main():
                 model_dir = snapshot_download(model_id, cache_dir="./hf_cache")
                 processor, model = load_image_model(model_dir)
                 pipeline = (processor, model)
-            elif folder_name == "FIBO":
-                from diffusers import BriaFiboPipeline, BitsAndBytesConfig, BriaFiboTransformer2DModel
-                from huggingface_hub import hf_hub_download
-                import importlib.util
-                
-                # VLM 加载优化：手动下载并导入以规避 ModularPipelineBlocks 的依赖解析 Bug
-                print(f"[{folder_name}] Manual loading VLM code to bypass requirements bug...")
-                vlm_code_path = hf_hub_download(
-                    repo_id="briaai/FIBO-VLM-prompt-to-JSON", 
-                    filename="fibo_vlm_prompt_to_json.py", 
-                    cache_dir="./hf_cache"
-                )
-                spec = importlib.util.spec_from_file_location("fibo_vlm_module", vlm_code_path)
-                fibo_vlm_module = importlib.util.module_from_spec(spec)
-                spec.loader.exec_module(fibo_vlm_module)
-                
-                vlm_pipe = fibo_vlm_module.BriaFiboVLMPromptToJson.from_pretrained(
-                    "briaai/FIBO-VLM-prompt-to-JSON",
-                    cache_dir="./hf_cache"
-                )
-                vlm_pipe = vlm_pipe.init_pipeline()
-                
-                print(f"[{folder_name}] Loading FIBO Transformer in 8-bit...")
-                quant_config = BitsAndBytesConfig(load_in_8bit=True)
-                transformer = BriaFiboTransformer2DModel.from_pretrained(
-                    model_id,
-                    subfolder="transformer",
-                    quantization_config=quant_config,
-                    torch_dtype=torch.bfloat16,
-                    cache_dir="./hf_cache"
-                )
-                
-                print(f"[{folder_name}] Loading FIBO Pipeline...")
-                fibo_pipe = BriaFiboPipeline.from_pretrained(
-                    model_id,
-                    transformer=transformer,
-                    torch_dtype=torch.bfloat16,
-                    cache_dir="./hf_cache"
-                )
-                pipeline = (vlm_pipe, fibo_pipe)
-            elif folder_name == "GLM-Image":
-                from diffusers.pipelines.glm_image import GlmImagePipeline
-                from diffusers.quantizers import PipelineQuantizationConfig
-                
-                # GLM-Image 报错要求 PipelineQuantizationConfig 实例
-                print(f"[{folder_name}] Loading with PipelineQuantizationConfig (8-bit)...")
-                quant_config = PipelineQuantizationConfig(
-                    quant_backend="bitsandbytes",
-                    quant_kwargs={"load_in_8bit": True},
-                    components_to_quantize=["transformer"]
-                )
-                pipeline = GlmImagePipeline.from_pretrained(
-                    model_id,
-                    quantization_config=quant_config,
-                    torch_dtype=torch.bfloat16,
-                    device_map="auto",
-                    cache_dir="./hf_cache"
-                )
             else:
                 pipeline = AutoPipelineForText2Image.from_pretrained(
                     model_id,
@@ -236,17 +177,29 @@ def main():
             # 现在 ERNIE 已经换用 FP8 模型，显存占用大幅下降，可以直接使用常规 offload 提升生图速度
             # FLUX.2_klein_9B（BF16 ~18GB）使用逐层 sequential offload，
             # 每次只将当前计算层移到 GPU，峰值显存最低，适合超出 VRAM 的大模型
+            # 开启模型 CPU 卸载以节省显存
             if pipeline:
-                if folder_name in ("FLUX.2_klein_9B"):
-                    pipeline.enable_sequential_cpu_offload()
+                if folder_name == "FIBO":
+                    # FIBO 的 pipeline 是元组 (vlm_pipe, fibo_pipe)
+                    # VLM 已经在 CPU，只需对 Diffusion Pipeline 开启 offload
+                    vlm_pipe, fibo_pipe = pipeline
+                    fibo_pipe.enable_model_cpu_offload()
+                    if hasattr(fibo_pipe, "enable_vae_slicing"):
+                        fibo_pipe.enable_vae_slicing()
+                    if hasattr(fibo_pipe, "enable_vae_tiling"):
+                        fibo_pipe.enable_vae_tiling()
                 else:
-                    pipeline.enable_model_cpu_offload()
+                    # 常规单 Pipeline 情况
+                    if folder_name in ("FLUX.2_klein_9B"):
+                        pipeline.enable_sequential_cpu_offload()
+                    else:
+                        pipeline.enable_model_cpu_offload()
 
-                # 针对 VAE 开启进一步显存优化
-                if hasattr(pipeline, "enable_vae_slicing"):
-                    pipeline.enable_vae_slicing()
-                if hasattr(pipeline, "enable_vae_tiling"):
-                    pipeline.enable_vae_tiling()
+                    # 针对 VAE 开启进一步显存优化
+                    if hasattr(pipeline, "enable_vae_slicing"):
+                        pipeline.enable_vae_slicing()
+                    if hasattr(pipeline, "enable_vae_tiling"):
+                        pipeline.enable_vae_tiling()
 
             # 3. 遍历 Excel 里的每一行数据
             for index, row in tqdm(df.iterrows(), total=len(df), desc=f"生成中 ({folder_name})"):
@@ -331,41 +284,10 @@ def main():
                         scheduler_name=kwargs.get("scheduler_name", "flash"),
                         seed=42
                     )
-                elif folder_name == "FIBO":
-                    vlm_pipe, fibo_pipe = pipeline
-                    # 1. Natural Prompt -> JSON
-                    vlm_output = vlm_pipe(prompt=kwargs["prompt"])
-                    json_prompt = vlm_output.values["json_prompt"]
-                    
-                    # 2. Get Negative Prompt
-                    def get_fibo_neg(existing_json: dict) -> str:
-                        style_medium = existing_json.get("style_medium", "").lower()
-                        if style_medium in ["photograph", "photography", "photo"]:
-                            return """{'style_medium':'digital illustration','artistic_style':'non-realistic'}"""
-                        return ""
-                    
-                    neg_prompt = get_fibo_neg(json.loads(json_prompt))
-                    
-                    # 3. Generate Image
-                    image = fibo_pipe(
-                        prompt=json_prompt,
-                        num_inference_steps=kwargs["num_inference_steps"],
-                        guidance_scale=kwargs["guidance_scale"],
-                        negative_prompt=neg_prompt
-                    ).images[0]
-                    
-                    # 可选：保存生成的 JSON prompt 供参考
-                    json_save_path = out_path.replace(".png", "_prompt.json")
-                    with open(json_save_path, "w", encoding="utf-8") as f:
-                        f.write(json_prompt)
-                elif folder_name == "GLM-Image":
-                    # GLM-Image 使用指定的 generator 种子
-                    generator = torch.Generator(device="cuda").manual_seed(42)
-                    image = pipeline(**kwargs, generator=generator).images[0]
-                elif folder_name == "ERNIE-Image-turbo":  # sd webui forge neo api
+                elif folder_name == "ERNIE-Image-turbo-api":  # sd webui forge neo api
                     image = call_ernie_turbo(kwargs["prompt"])
-                elif folder_name == "ERNIE-Image":
-                    image = call_ernie_image(kwargs["prompt"])
+                elif folder_name == "z-image-turbo-api":  # sd webui forge neo api
+                    image = call_zit_turbo(kwargs["prompt"])
                 else:
                     image = pipeline(**kwargs).images[0]
 
