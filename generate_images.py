@@ -169,12 +169,22 @@ def main():
                 pipeline = (processor, model)
             elif folder_name == "FIBO":
                 from diffusers import BriaFiboPipeline, BitsAndBytesConfig, BriaFiboTransformer2DModel
-                from diffusers.modular_pipelines import ModularPipelineBlocks
+                from huggingface_hub import hf_hub_download
+                import importlib.util
                 
-                print(f"[{folder_name}] Loading VLM prompt-to-JSON model...")
-                vlm_pipe = ModularPipelineBlocks.from_pretrained(
-                    "briaai/FIBO-VLM-prompt-to-JSON", 
-                    trust_remote_code=True, 
+                # VLM 加载优化：手动下载并导入以规避 ModularPipelineBlocks 的依赖解析 Bug
+                print(f"[{folder_name}] Manual loading VLM code to bypass requirements bug...")
+                vlm_code_path = hf_hub_download(
+                    repo_id="briaai/FIBO-VLM-prompt-to-JSON", 
+                    filename="fibo_vlm_prompt_to_json.py", 
+                    cache_dir="./hf_cache"
+                )
+                spec = importlib.util.spec_from_file_location("fibo_vlm_module", vlm_code_path)
+                fibo_vlm_module = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(fibo_vlm_module)
+                
+                vlm_pipe = fibo_vlm_module.BriaFiboVLMPromptToJson.from_pretrained(
+                    "briaai/FIBO-VLM-prompt-to-JSON",
                     cache_dir="./hf_cache"
                 )
                 vlm_pipe = vlm_pipe.init_pipeline()
@@ -199,11 +209,15 @@ def main():
                 pipeline = (vlm_pipe, fibo_pipe)
             elif folder_name == "GLM-Image":
                 from diffusers.pipelines.glm_image import GlmImagePipeline
-                from diffusers import BitsAndBytesConfig
+                from diffusers.quantizers import PipelineQuantizationConfig
                 
-                # GLM-Image 也是大型模型，使用 8-bit 量化加载
-                print(f"[{folder_name}] Loading with 8-bit quantization...")
-                quant_config = BitsAndBytesConfig(load_in_8bit=True)
+                # GLM-Image 报错要求 PipelineQuantizationConfig 实例
+                print(f"[{folder_name}] Loading with PipelineQuantizationConfig (8-bit)...")
+                quant_config = PipelineQuantizationConfig(
+                    quant_backend="bitsandbytes",
+                    quant_kwargs={"load_in_8bit": True},
+                    components_to_quantize=["transformer"]
+                )
                 pipeline = GlmImagePipeline.from_pretrained(
                     model_id,
                     quantization_config=quant_config,
