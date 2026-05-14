@@ -14,6 +14,7 @@ os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 import gc
 import shutil
 import time
+import json
 from datetime import datetime
 import pandas as pd
 import torch
@@ -39,12 +40,15 @@ MODELS = {
     # "z_image_turbo": "Tongyi-MAI/Z-Image-Turbo",
     # "OpenKolors_v2_1": "lrzjason/OpenKolors_v2_1"
     # "HiDream-O1-Image": "drbaph/HiDream-O1-Image-Dev-FP8",
-    # "ERNIE-Image-turbo": "Abiray/ERNIE-Image-Turbo-FP8-NVFP4",
+    # "ERNIE-Image-turbo-api": "Abiray/ERNIE-Image-Turbo-FP8-NVFP4",
     # "Juggernaut_Z": "RunDiffusion/Juggernaut-Z-Image",
     # "Juggernaut-XI-v11": "RunDiffusion/Juggernaut-XI-v11",
     # "Juggernaut-XI-Lightning": "RunDiffusion/Juggernaut-XI-Lightning",
     # "Realistic_Vision_V6.0_B1_noVAE": "SG161222/Realistic_Vision_V6.0_B1_noVAE",
-    "ERNIE-Image": "baidu/ERNIE-Image",
+    # "ERNIE-Image-api": "baidu/ERNIE-Image",
+    "SD3.5_Medium": "stabilityai/stable-diffusion-3.5-medium",
+    "FIBO": "briaai/FIBO",
+    "GLM-Image": "zai-org/GLM-Image",
 }
 
 
@@ -109,6 +113,13 @@ def main():
                     use_safetensors=True,
                     cache_dir="./hf_cache"
                 )
+            elif "SD3.5_Medium" == folder_name:
+                from diffusers import StableDiffusion3Pipeline
+                pipeline = StableDiffusion3Pipeline.from_pretrained(
+                    model_id,
+                    torch_dtype=torch.bfloat16,
+                    cache_dir="./hf_cache"
+                )
             elif "z_image_turbo" == folder_name or "Juggernaut_Z" == folder_name:
                 from diffusers import ZImagePipeline
                 pipeline = ZImagePipeline.from_pretrained(
@@ -118,7 +129,7 @@ def main():
                     cache_dir="./hf_cache",
                     ignore_patterns=["*.gguf", "*fp16*", "*FP8*"]
                 )
-            elif "ernie" in folder_name.lower():
+            elif "api" in folder_name.lower():
                 pipeline = None
             elif "Juggernaut-XI-v11" == folder_name or "Juggernaut-XI-Lightning" == folder_name:
                 from diffusers import DiffusionPipeline
@@ -156,6 +167,50 @@ def main():
                 model_dir = snapshot_download(model_id, cache_dir="./hf_cache")
                 processor, model = load_image_model(model_dir)
                 pipeline = (processor, model)
+            elif folder_name == "FIBO":
+                from diffusers import BriaFiboPipeline, BitsAndBytesConfig, BriaFiboTransformer2DModel
+                from diffusers.modular_pipelines import ModularPipelineBlocks
+                
+                print(f"[{folder_name}] Loading VLM prompt-to-JSON model...")
+                vlm_pipe = ModularPipelineBlocks.from_pretrained(
+                    "briaai/FIBO-VLM-prompt-to-JSON", 
+                    trust_remote_code=True, 
+                    cache_dir="./hf_cache"
+                )
+                vlm_pipe = vlm_pipe.init_pipeline()
+                
+                print(f"[{folder_name}] Loading FIBO Transformer in 8-bit...")
+                quant_config = BitsAndBytesConfig(load_in_8bit=True)
+                transformer = BriaFiboTransformer2DModel.from_pretrained(
+                    model_id,
+                    subfolder="transformer",
+                    quantization_config=quant_config,
+                    torch_dtype=torch.bfloat16,
+                    cache_dir="./hf_cache"
+                )
+                
+                print(f"[{folder_name}] Loading FIBO Pipeline...")
+                fibo_pipe = BriaFiboPipeline.from_pretrained(
+                    model_id,
+                    transformer=transformer,
+                    torch_dtype=torch.bfloat16,
+                    cache_dir="./hf_cache"
+                )
+                pipeline = (vlm_pipe, fibo_pipe)
+            elif folder_name == "GLM-Image":
+                from diffusers.pipelines.glm_image import GlmImagePipeline
+                from diffusers import BitsAndBytesConfig
+                
+                # GLM-Image 也是大型模型，使用 8-bit 量化加载
+                print(f"[{folder_name}] Loading with 8-bit quantization...")
+                quant_config = BitsAndBytesConfig(load_in_8bit=True)
+                pipeline = GlmImagePipeline.from_pretrained(
+                    model_id,
+                    quantization_config=quant_config,
+                    torch_dtype=torch.bfloat16,
+                    device_map="auto",
+                    cache_dir="./hf_cache"
+                )
             else:
                 pipeline = AutoPipelineForText2Image.from_pretrained(
                     model_id,
@@ -163,7 +218,6 @@ def main():
                     use_safetensors=False,
                     cache_dir="./hf_cache"
                 )
-
             # 开启模型 CPU 卸载以节省显存，取代 pipeline.to("cuda")
             # 现在 ERNIE 已经换用 FP8 模型，显存占用大幅下降，可以直接使用常规 offload 提升生图速度
             # FLUX.2_klein_9B（BF16 ~18GB）使用逐层 sequential offload，
@@ -174,12 +228,11 @@ def main():
                 else:
                     pipeline.enable_model_cpu_offload()
 
-                if folder_name not in ("HiDream-O1-Image"):
-                    # 针对 VAE 开启进一步显存优化
-                    if hasattr(pipeline, "enable_vae_slicing"):
-                        pipeline.enable_vae_slicing()
-                    if hasattr(pipeline, "enable_vae_tiling"):
-                        pipeline.enable_vae_tiling()
+                # 针对 VAE 开启进一步显存优化
+                if hasattr(pipeline, "enable_vae_slicing"):
+                    pipeline.enable_vae_slicing()
+                if hasattr(pipeline, "enable_vae_tiling"):
+                    pipeline.enable_vae_tiling()
 
             # 3. 遍历 Excel 里的每一行数据
             for index, row in tqdm(df.iterrows(), total=len(df), desc=f"生成中 ({folder_name})"):
@@ -192,7 +245,9 @@ def main():
                 # 4. 生成图像 (明确使用 prompt=prompt 关键字传参，避免部分新模型架构报错)
                 kwargs = {
                     "prompt": prompt,
-                    "num_inference_steps": 25
+                    "num_inference_steps": 25,
+                    "width": 1024,
+                    "height": 1024
                 }
 
                 # 针对 FLUX.2 等蒸馏模型（Distilled），根据官方文档强制设置 guidance_scale=1.0 并降低步数
@@ -234,6 +289,15 @@ def main():
                     kwargs["width"] = 1024
                     kwargs["shift"] = 1.0
                     kwargs["scheduler_name"] = "flash"
+                elif "SD3.5_Medium" == folder_name:
+                    kwargs["guidance_scale"] = 4.5
+                    kwargs["num_inference_steps"] = 40
+                elif folder_name == "FIBO":
+                    kwargs["guidance_scale"] = 5
+                    kwargs["num_inference_steps"] = 50
+                elif folder_name == "GLM-Image":
+                    kwargs["guidance_scale"] = 1.5
+                    kwargs["num_inference_steps"] = 50
                 # 针对其他 Turbo / Lightning / Fast 模型，适当降低默认步数提高速度
                 elif "lightning" in folder_name.lower() or "turbo" in folder_name.lower() or "fast" in folder_name.lower():
                     kwargs["num_inference_steps"] = 8
@@ -253,6 +317,37 @@ def main():
                         scheduler_name=kwargs.get("scheduler_name", "flash"),
                         seed=42
                     )
+                elif folder_name == "FIBO":
+                    vlm_pipe, fibo_pipe = pipeline
+                    # 1. Natural Prompt -> JSON
+                    vlm_output = vlm_pipe(prompt=kwargs["prompt"])
+                    json_prompt = vlm_output.values["json_prompt"]
+                    
+                    # 2. Get Negative Prompt
+                    def get_fibo_neg(existing_json: dict) -> str:
+                        style_medium = existing_json.get("style_medium", "").lower()
+                        if style_medium in ["photograph", "photography", "photo"]:
+                            return """{'style_medium':'digital illustration','artistic_style':'non-realistic'}"""
+                        return ""
+                    
+                    neg_prompt = get_fibo_neg(json.loads(json_prompt))
+                    
+                    # 3. Generate Image
+                    image = fibo_pipe(
+                        prompt=json_prompt,
+                        num_inference_steps=kwargs["num_inference_steps"],
+                        guidance_scale=kwargs["guidance_scale"],
+                        negative_prompt=neg_prompt
+                    ).images[0]
+                    
+                    # 可选：保存生成的 JSON prompt 供参考
+                    json_save_path = out_path.replace(".png", "_prompt.json")
+                    with open(json_save_path, "w", encoding="utf-8") as f:
+                        f.write(json_prompt)
+                elif folder_name == "GLM-Image":
+                    # GLM-Image 使用指定的 generator 种子
+                    generator = torch.Generator(device="cuda").manual_seed(42)
+                    image = pipeline(**kwargs, generator=generator).images[0]
                 elif folder_name == "ERNIE-Image-turbo":  # sd webui forge neo api
                     image = call_ernie_turbo(kwargs["prompt"])
                 elif folder_name == "ERNIE-Image":
